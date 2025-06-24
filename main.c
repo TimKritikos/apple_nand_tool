@@ -1,3 +1,22 @@
+/* main.c
+
+   This file is part of the apple nand tool project.
+
+   Copyright (c) 2025 Efthymios Kritikos
+
+   This program is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include "plist_parse.h"
@@ -103,8 +122,10 @@ int main(int argc, char *argd[]){
 	uint32_t page_count=plist_info->block_pages*plist_info->ce_blocks*plist_info->ce;
 	for(uint32_t i=0;i<page_count;i++){
 		fread(IPDP_Page_dump,DumpPageSize,1,ipdp_file);
+
 		// from IOFlashControllerUserClient_OutputStruct in original iphone dataprotection ramdisk code
 		uint32_t ret1=*(uint32_t*)(IPDP_Page_dump+DumpPageSize-8),ret2=*(uint32_t*)(IPDP_Page_dump+DumpPageSize-4);
+
 #		define PRINT_HEADER printf("CE:%c Page:0x%04x ",(i%2==0)?'0':'1',i/2)
 		if(verbose)
 			PRINT_HEADER;
@@ -128,7 +149,6 @@ int main(int argc, char *argd[]){
 		}
 	}
 
-	//printf("ECC error pages=%lu\nBlank pages=%lu\nCorrectly red pages=%lu\n",ECC_error_count,Blank_page_count,Correct_page_count);
 	print_value("ECC error pages:",ECC_error_count,23);
 	print_value("Blank pages:",Blank_page_count,23);
 	print_value("Correct_page_count",Correct_page_count,23);
