@@ -124,7 +124,7 @@ struct ipdp_merge_stats_t{
 	uint64_t page_count;
 };
 
-struct ipdp_merge_stats_t *ipdp_merge(struct ipdp_plist_info *plist_info, FILE *ipdp_file1 ,FILE *ipdp_file2, FILE *out, int verbose,int DumpPageSize, long int calculated_file_size){
+struct ipdp_merge_stats_t *ipdp_merge(struct ipdp_plist_info *plist_info, FILE *ipdp_file1 ,FILE *ipdp_file2, FILE *out, int verbose,int DumpPageSize, long int calculated_file_size,FILE* dump_ecc_log_file){
 
 
 	fseek(ipdp_file1, 0L, SEEK_END);
@@ -196,6 +196,8 @@ struct ipdp_merge_stats_t *ipdp_merge(struct ipdp_plist_info *plist_info, FILE *
 			if(dump1_ret1==RET1_ECC_ERR||dump2_ret1==RET1_ECC_ERR){
 				if(dump2_ret1==RET1_ECC_ERR)
 					use_page=2;
+				if(dump_ecc_log_file)
+					fprintf(dump_ecc_log_file,"spot_list[%ld].ecc=%d;\nspot_list[%ld].page=0x%04x;\n",ret->ECC_error_count,(i%2==0)?0:1,ret->ECC_error_count,i/2);
 				ret->ECC_error_count++;
 			}else if(dump1_ret1==RET1_BLANK && dump2_ret1==RET1_BLANK){
 				ret->Blank_pages++;
@@ -221,11 +223,11 @@ struct ipdp_merge_stats_t *ipdp_merge(struct ipdp_plist_info *plist_info, FILE *
 }
 
 int main(int argc, char *argd[]){
-	char *plist_file=NULL,*ipdp_filename=NULL,*ipdp_filename2=NULL,*ipdp_output=NULL;
+	char *plist_file=NULL,*ipdp_filename=NULL,*ipdp_filename2=NULL,*ipdp_output=NULL,*dump_ecc_log_filename=NULL;
 	int opt;
 
 	int verbose=0;
-	while ((opt = getopt(argc, argd, "hp:vVi:I:o:")) != -1) {
+	while ((opt = getopt(argc, argd, "hp:vVi:I:o:l:")) != -1) {
 		switch (opt) {
 			case 'h':
 				help(argd[0]);
@@ -247,6 +249,9 @@ int main(int argc, char *argd[]){
 				break;
 			case 'o':
 				ipdp_output=optarg;
+				break;
+			case 'l':
+				dump_ecc_log_filename=optarg;
 				break;
 			default:
 				help(argd[0]);
@@ -308,7 +313,12 @@ int main(int argc, char *argd[]){
 				fclose(ipdp_file);
 				free(plist_info);
 			}
-			struct ipdp_merge_stats_t *stats= ipdp_merge(plist_info,ipdp_file,ipdp_file2,out,verbose,DumpPageSize,calculated_file_size);
+
+			FILE *dump_ecc_log_file=NULL;
+			if(dump_ecc_log_filename!=NULL)
+				dump_ecc_log_file=fopen(dump_ecc_log_filename,"w");
+
+			struct ipdp_merge_stats_t *stats= ipdp_merge(plist_info,ipdp_file,ipdp_file2,out,verbose,DumpPageSize,calculated_file_size,dump_ecc_log_file);
 			if(stats!=NULL){
 				print_value("Both correct but mismatching pages(!):",stats->Mismatching_correct_pages,40);
 				print_value("ECC error on just one page :",stats->ECC_on_just_one,40);
