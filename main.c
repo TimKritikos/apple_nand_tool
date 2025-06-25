@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include "plist_parse.h"
 #include <unistd.h>
+#include <string.h>
 
 #define VERSION "v0.0-dev"
 
@@ -31,6 +32,8 @@ void help(char* progname){
 			"  -h                  Print the program version and exit successfully\n"
 			"  -p <plist>          Supply the plist file\n"
 			"  -i <ipdp file>      Supply an iphone dataprotection nand dump file\n"
+			"  -I <ipdp file>      Supply the second iphone dataprotection nand dump file to merge the correct pages\n"
+			"  -o <ipdp file>      Supply the output iphone dataprotection file\n"
 			"  -v                  Print the version and exit successfully\n"
 			"  -V                  Print verbose information\n"
 			, progname);
@@ -45,12 +48,184 @@ void print_value(char* name, long int value,int tabsize){
 	printf("%ld\n",value);
 }
 
+struct ipdp_stats_t{
+	uint64_t ECC_error_count;
+	uint64_t Blank_page_count;
+	uint64_t Correct_page_count;
+	uint64_t Other_pages;
+	uint64_t page_count;
+};
+
+#define RET1_ECC_ERR 0xE00002D1
+#define RET1_BLANK   0xE00002E5
+
+struct ipdp_stats_t *ipdp_get_stats(struct ipdp_plist_info *plist_info, FILE *dump, int verbose,int DumpPageSize, long int calculated_file_size){
+
+	fseek(dump, 0L, SEEK_END);
+	long int filesize = ftell(dump);
+	fseek(dump, 0L, SEEK_SET);
+
+	if (verbose&&filesize==calculated_file_size){
+		printf("Iphone dataprotection nand file size is correct!\n");
+	}else if(filesize!=calculated_file_size){
+		printf("Error: Iphone dataprotection nand file size is not correct!\n");
+		return NULL;
+	}
+
+	struct ipdp_stats_t *ret=malloc(sizeof(struct ipdp_stats_t));
+
+	memset(ret,0,sizeof(struct ipdp_stats_t));
+
+	ret->page_count=plist_info->block_pages*plist_info->ce_blocks*plist_info->ce;
+
+	uint8_t *IPDP_Page_dump=malloc(DumpPageSize);
+
+	for(uint32_t i=0;i<ret->page_count;i++){
+		fread(IPDP_Page_dump,DumpPageSize,1,dump);
+
+		// from IOFlashControllerUserClient_OutputStruct in original iphone dataprotection ramdisk code
+		uint32_t ret1=*(uint32_t*)(IPDP_Page_dump+DumpPageSize-8),ret2=*(uint32_t*)(IPDP_Page_dump+DumpPageSize-4);
+
+#		define PRINT_HEADER printf("CE:%c Page:0x%04x ",(i%2==0)?'0':'1',i/2)
+		if(verbose)
+			PRINT_HEADER;
+		if(ret1==0&&ret2==0){
+			if(verbose)
+				printf("Correctly read page\n");
+			ret->Correct_page_count++;
+		}else if(ret1==RET1_ECC_ERR && ret2==0){
+			if(verbose)
+				printf("reported ECC error\n");
+			ret->ECC_error_count++;
+		}else if(ret1==RET1_BLANK && ret2==0){
+			if(verbose)
+				printf("reported unformatted media (erased page?)\n");
+			ret->Blank_page_count++;
+		}else{
+			if(!verbose)
+				PRINT_HEADER;
+			printf("unknown values %04x:%04x\n",ret1,ret2);
+			ret->Other_pages++;
+		}
+	}
+
+	free(IPDP_Page_dump);
+
+	return ret;
+}
+
+struct ipdp_merge_stats_t{
+	uint64_t Mismatching_correct_pages;
+	uint64_t ECC_on_just_one;
+	uint64_t Blank_on_just_one;
+	uint64_t ECC_error_count;
+	uint64_t Blank_pages;
+	uint64_t Other_pages;
+	uint64_t page_count;
+};
+
+struct ipdp_merge_stats_t *ipdp_merge(struct ipdp_plist_info *plist_info, FILE *ipdp_file1 ,FILE *ipdp_file2, FILE *out, int verbose,int DumpPageSize, long int calculated_file_size){
+
+
+	fseek(ipdp_file1, 0L, SEEK_END);
+	long int filesize1 = ftell(ipdp_file1);
+	fseek(ipdp_file1, 0L, SEEK_SET);
+
+	fseek(ipdp_file2, 0L, SEEK_END);
+	long int filesize2 = ftell(ipdp_file2);
+	fseek(ipdp_file2, 0L, SEEK_SET);
+
+	if (verbose&&filesize2==calculated_file_size && filesize1==calculated_file_size ){
+		printf("Iphone dataprotection nand file1 size is correct!\n");
+		printf("Iphone dataprotection nand file2 size is correct!\n");
+	}else if(filesize2!=calculated_file_size || filesize1!=calculated_file_size){
+		printf("Error: one of the Iphone dataprotection nand file's size is not correct!\n");
+		return NULL;
+	}
+
+	struct ipdp_merge_stats_t *ret=malloc(sizeof(struct ipdp_merge_stats_t));
+
+	memset(ret,0,sizeof(struct ipdp_merge_stats_t));
+
+	ret->page_count=plist_info->block_pages*plist_info->ce_blocks*plist_info->ce;
+
+	uint8_t *IPDP_Page_dump1=malloc(DumpPageSize);
+	uint8_t *IPDP_Page_dump2=malloc(DumpPageSize);
+
+	for(uint32_t i=0;i<ret->page_count;i++){
+		fread(IPDP_Page_dump1,DumpPageSize,1,ipdp_file1);
+		fread(IPDP_Page_dump2,DumpPageSize,1,ipdp_file2);
+
+		// from IOFlashControllerUserClient_OutputStruct in original iphone dataprotection ramdisk code
+		uint32_t dump1_ret1=*(uint32_t*)(IPDP_Page_dump1+DumpPageSize-8),dump1_ret2=*(uint32_t*)(IPDP_Page_dump1+DumpPageSize-4);
+		uint32_t dump2_ret1=*(uint32_t*)(IPDP_Page_dump2+DumpPageSize-8),dump2_ret2=*(uint32_t*)(IPDP_Page_dump2+DumpPageSize-4);
+
+		int use_page=1;
+
+		if(dump1_ret2!=0||dump2_ret2!=0){
+			//Unexpected stuff. We shouldn't get here ever
+			if(dump2_ret1==0&&dump2_ret2==0)
+				use_page=2;
+			else if(dump1_ret1!=0||dump1_ret2!=0){
+				ret->Other_pages++;
+			}
+		}
+
+		if(dump1_ret1==0&&dump2_ret1==0){
+			//Wen both dumps are reported fine on this page.
+			if(memcmp(IPDP_Page_dump1,IPDP_Page_dump2,DumpPageSize)!=0){
+				ret->Mismatching_correct_pages++;
+			}
+		}else if(dump1_ret1==0||dump2_ret1==0){
+			//one of the dumps is fine
+			if(dump2_ret1==0){ //by default we use 1 so we only check if it isn't
+				use_page=2;
+				if(dump1_ret1==RET1_ECC_ERR)
+					ret->ECC_on_just_one++;
+				else
+					ret->Blank_on_just_one++;
+			}else{
+				/*just for reporting*/
+				if(dump2_ret1==RET1_ECC_ERR)
+					ret->ECC_on_just_one++;
+				else
+					ret->Blank_on_just_one++;
+			}
+		}else{
+			//both dumps are bad in this page, let's see what to report..
+			if(dump1_ret1==RET1_ECC_ERR||dump2_ret1==RET1_ECC_ERR){
+				if(dump2_ret1==RET1_ECC_ERR)
+					use_page=2;
+				ret->ECC_error_count++;
+			}else if(dump1_ret1==RET1_BLANK && dump2_ret1==RET1_BLANK){
+				ret->Blank_pages++;
+			}else
+				ret->Other_pages++;
+
+		}
+
+		if(use_page==1)
+			fwrite(IPDP_Page_dump1,DumpPageSize,1,out);
+		else
+			fwrite(IPDP_Page_dump2,DumpPageSize,1,out);
+		if((i%100)==0){
+			printf("\r%lu%%",(i*100)/ret->page_count);
+		}
+	}
+	printf("\n");
+
+	free(IPDP_Page_dump1);
+	free(IPDP_Page_dump2);
+
+	return ret;
+}
+
 int main(int argc, char *argd[]){
-	char *plist_file=NULL,*ipdp_filename=NULL;
+	char *plist_file=NULL,*ipdp_filename=NULL,*ipdp_filename2=NULL,*ipdp_output=NULL;
 	int opt;
 
 	int verbose=0;
-	while ((opt = getopt(argc, argd, "hp:vVi:")) != -1) {
+	while ((opt = getopt(argc, argd, "hp:vVi:I:o:")) != -1) {
 		switch (opt) {
 			case 'h':
 				help(argd[0]);
@@ -66,6 +241,12 @@ int main(int argc, char *argd[]){
 				break;
 			case 'i':
 				ipdp_filename=optarg;
+				break;
+			case 'I':
+				ipdp_filename2=optarg;
+				break;
+			case 'o':
+				ipdp_output=optarg;
 				break;
 			default:
 				help(argd[0]);
@@ -87,6 +268,7 @@ int main(int argc, char *argd[]){
 
 	long int DumpPageSize=plist_info->page_bytes+plist_info->meta_per_logical_page+8;
 	long int calculated_file_size=DumpPageSize*plist_info->block_pages*plist_info->ce_blocks*plist_info->ce;
+
 	if ( plist_info && verbose){
 		printf("## Data from the plist:\n");
 #		define TABSIZE 35
@@ -98,64 +280,62 @@ int main(int argc, char *argd[]){
 		print_value("CEs",plist_info->ce,TABSIZE);
 	}
 
-
 	FILE *ipdp_file=fopen(ipdp_filename,"r");
-
-	fseek(ipdp_file, 0L, SEEK_END);
-	long int filesize = ftell(ipdp_file);
-	fseek(ipdp_file, 0L, SEEK_SET);
-
-	if (verbose&&filesize==calculated_file_size){
-		printf("Iphone dataprotection nand file size is correct!\n");
-	}else if(filesize!=calculated_file_size){
-		printf("Error: Iphone dataprotection nand file size is not correct!\n");
+	if(ipdp_file==NULL){
+		printf("couldn't open first iphone dataprotection file\n");
+		free(plist_info);
+		return 1;
 	}
 
-	uint8_t *IPDP_Page_dump=malloc(DumpPageSize);
-
-	uint64_t ECC_error_count=0,Blank_page_count=0,Correct_page_count=0,Other_pages=0;
-
-	//image files structure :
-	//
-	// The file :  [ dump_page ] [ dump_page ] .... [ dump page ]
-	// dump_page : [ page_bytes (8192 bytes probably) ] [ meta_per_logical_page (12/16 bytes probably) ] [ ret1 (uint32_t) ] [ ret2 (uint32_t) ]
-	uint32_t page_count=plist_info->block_pages*plist_info->ce_blocks*plist_info->ce;
-	for(uint32_t i=0;i<page_count;i++){
-		fread(IPDP_Page_dump,DumpPageSize,1,ipdp_file);
-
-		// from IOFlashControllerUserClient_OutputStruct in original iphone dataprotection ramdisk code
-		uint32_t ret1=*(uint32_t*)(IPDP_Page_dump+DumpPageSize-8),ret2=*(uint32_t*)(IPDP_Page_dump+DumpPageSize-4);
-
-#		define PRINT_HEADER printf("CE:%c Page:0x%04x ",(i%2==0)?'0':'1',i/2)
-		if(verbose)
-			PRINT_HEADER;
-		if(ret1==0&&ret2==0){
-			if(verbose)
-				printf("Correctly read page\n");
-			Correct_page_count++;
-		}else if(ret1==0xE00002D1 && ret2==0){
-			if(verbose)
-				printf("reported ECC error\n");
-			ECC_error_count++;
-		}else if(ret1==0xE00002E5 && ret2==0){
-			if(verbose)
-				printf("reported unformatted media (erased page?)\n");
-			Blank_page_count++;
-		}else{
-			if(!verbose)
-				PRINT_HEADER;
-			printf("unknown values %04x:%04x\n",ret1,ret2);
-			Other_pages++;
+	if(ipdp_filename2!=NULL){
+		if(ipdp_output==NULL){
+			printf("ERROR: need output file to be set\n");
+			fclose(ipdp_file);
+			free(plist_info);
+			return 1;
 		}
+		FILE *ipdp_file2=fopen(ipdp_filename2,"r");
+		if(ipdp_file2==NULL){
+			printf("Couldn't open second iphone dataprotection file\n");
+			fclose(ipdp_file);
+			free(plist_info);
+			return 1;
+		}else{
+			FILE *out=fopen(ipdp_output,"w");
+			if(out==NULL){
+				printf("couldn't open output file\n");
+				fclose(ipdp_file2);
+				fclose(ipdp_file);
+				free(plist_info);
+			}
+			struct ipdp_merge_stats_t *stats= ipdp_merge(plist_info,ipdp_file,ipdp_file2,out,verbose,DumpPageSize,calculated_file_size);
+			if(stats!=NULL){
+				print_value("Both correct but mismatching pages(!):",stats->Mismatching_correct_pages,40);
+				print_value("ECC error on just one page :",stats->ECC_on_just_one,40);
+				print_value("One page blank the other correct (!):",stats->Blank_on_just_one,40);
+				print_value("Both pages have ECC error:",stats->ECC_error_count,40);
+				print_value("Both pages are blank:",stats->Blank_pages,40);
+				print_value("Both pages have unkown error(!):",stats->Other_pages,40);
+				print_value("Total pages:",stats->page_count,40);
+				free(stats);
+			}
+			fclose(ipdp_file2);
+			fclose(ipdp_file);
+			fclose(out);
+		}
+	}else{
+		struct ipdp_stats_t *stats= ipdp_get_stats(plist_info,ipdp_file,verbose,DumpPageSize,calculated_file_size);
+		if(stats){
+			print_value("ECC error pages:",stats->ECC_error_count,23);
+			print_value("Blank pages:",stats->Blank_page_count,23);
+			print_value("Correct_page_count",stats->Correct_page_count,23);
+			print_value("Other pages",stats->Other_pages,23);
+			print_value("Total pages",stats->page_count,23);
+			free(stats);
+		}
+		fclose(ipdp_file);
 	}
 
-	print_value("ECC error pages:",ECC_error_count,23);
-	print_value("Blank pages:",Blank_page_count,23);
-	print_value("Correct_page_count",Correct_page_count,23);
-	print_value("Other pages",Other_pages,23);
-	print_value("Total pages",page_count,23);
-
-	free(IPDP_Page_dump);
 
 	free(plist_info);
 }
