@@ -59,6 +59,8 @@ struct ipdp_stats_t{
 #define RET1_ECC_ERR 0xE00002D1
 #define RET1_BLANK   0xE00002E5
 
+#define RET1_SKIPPED 0x32489122
+
 struct ipdp_stats_t *ipdp_get_stats(struct ipdp_plist_info *plist_info, FILE *dump, int verbose,int DumpPageSize, long int calculated_file_size){
 
 	fseek(dump, 0L, SEEK_END);
@@ -80,6 +82,8 @@ struct ipdp_stats_t *ipdp_get_stats(struct ipdp_plist_info *plist_info, FILE *du
 
 	uint8_t *IPDP_Page_dump=malloc(DumpPageSize);
 
+	int spot_file=0;
+
 	for(uint32_t i=0;i<ret->page_count;i++){
 		fread(IPDP_Page_dump,DumpPageSize,1,dump);
 
@@ -92,6 +96,12 @@ struct ipdp_stats_t *ipdp_get_stats(struct ipdp_plist_info *plist_info, FILE *du
 		if(ret1==0&&ret2==0){
 			if(verbose)
 				printf("Correctly read page\n");
+			ret->Correct_page_count++;
+		}else if(ret1==RET1_SKIPPED && ret2==0){
+			if(spot_file==0){
+				printf("Detected spot file\n");
+				spot_file=1;
+			}
 			ret->Correct_page_count++;
 		}else if(ret1==RET1_ECC_ERR && ret2==0){
 			if(verbose)
@@ -152,6 +162,8 @@ struct ipdp_merge_stats_t *ipdp_merge(struct ipdp_plist_info *plist_info, FILE *
 	uint8_t *IPDP_Page_dump1=malloc(DumpPageSize);
 	uint8_t *IPDP_Page_dump2=malloc(DumpPageSize);
 
+	int spot_file=0;
+
 	for(uint32_t i=0;i<ret->page_count;i++){
 		fread(IPDP_Page_dump1,DumpPageSize,1,ipdp_file1);
 		fread(IPDP_Page_dump2,DumpPageSize,1,ipdp_file2);
@@ -191,13 +203,20 @@ struct ipdp_merge_stats_t *ipdp_merge(struct ipdp_plist_info *plist_info, FILE *
 				else
 					ret->Blank_on_just_one++;
 			}
+		}else if(dump1_ret1==RET1_SKIPPED||dump2_ret1==RET1_SKIPPED){
+			if(spot_file==0){
+				spot_file=1;
+				printf("Detected spot file\n");
+			}
+			if(dump2_ret1==RET1_SKIPPED)
+				use_page=2;
 		}else{
 			//both dumps are bad in this page, let's see what to report..
 			if(dump1_ret1==RET1_ECC_ERR||dump2_ret1==RET1_ECC_ERR){
 				if(dump2_ret1==RET1_ECC_ERR)
 					use_page=2;
 				if(dump_ecc_log_file)
-					fprintf(dump_ecc_log_file,"spot_list[%ld].ecc=%d;\nspot_list[%ld].page=0x%04x;\n",ret->ECC_error_count,(i%2==0)?0:1,ret->ECC_error_count,i/2);
+					fprintf(dump_ecc_log_file,"spot_list[%ld].ce=%d;\nspot_list[%ld].page=0x%04x;\n",ret->ECC_error_count,(i%2==0)?0:1,ret->ECC_error_count,i/2);
 				ret->ECC_error_count++;
 			}else if(dump1_ret1==RET1_BLANK && dump2_ret1==RET1_BLANK){
 				ret->Blank_pages++;
