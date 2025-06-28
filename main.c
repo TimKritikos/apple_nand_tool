@@ -289,6 +289,8 @@ int main(int argc, char *argd[]){
 
 	//FILE *image_file1=fopen(argd[1],"r");
 	struct ipdp_plist_info *plist_info=parse_ipdp_plist(plist_file);
+	if (!plist_info)
+		return 1;
 
 	long int DumpPageSize=plist_info->page_bytes+plist_info->meta_per_logical_page+8;
 	long int calculated_file_size=DumpPageSize*plist_info->block_pages*plist_info->ce_blocks*plist_info->ce;
