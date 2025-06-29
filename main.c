@@ -85,7 +85,12 @@ struct ipdp_stats_t *ipdp_get_stats(struct ipdp_plist_info *plist_info, FILE *du
 	int spot_file=0;
 
 	for(uint32_t i=0;i<ret->page_count;i++){
-		fread(IPDP_Page_dump,DumpPageSize,1,dump);
+		if(fread(IPDP_Page_dump,DumpPageSize,1,dump)!=1){
+			printf("Failed to read input file\n");
+			free(IPDP_Page_dump);
+			free(ret);
+			return NULL;
+		}
 
 		// from IOFlashControllerUserClient_OutputStruct in original iphone dataprotection ramdisk code
 		uint32_t ret1=*(uint32_t*)(IPDP_Page_dump+DumpPageSize-8),ret2=*(uint32_t*)(IPDP_Page_dump+DumpPageSize-4);
@@ -163,10 +168,18 @@ struct ipdp_merge_stats_t *ipdp_merge(struct ipdp_plist_info *plist_info, FILE *
 	uint8_t *IPDP_Page_dump2=malloc(DumpPageSize);
 
 	int spot_file=0;
+	int warned_both_skipped=0;
+
+	unsigned long int log_file_index=0;
 
 	for(uint32_t i=0;i<ret->page_count;i++){
-		fread(IPDP_Page_dump1,DumpPageSize,1,ipdp_file1);
-		fread(IPDP_Page_dump2,DumpPageSize,1,ipdp_file2);
+		if( (fread(IPDP_Page_dump1,DumpPageSize,1,ipdp_file1)!=1) || (fread(IPDP_Page_dump2,DumpPageSize,1,ipdp_file2)!=1) ){
+			printf("Failed to read on of the input files\n");
+			free(IPDP_Page_dump1);
+			free(IPDP_Page_dump2);
+			free(ret);
+			return NULL;
+		}
 
 		// from IOFlashControllerUserClient_OutputStruct in original iphone dataprotection ramdisk code
 		uint32_t dump1_ret1=*(uint32_t*)(IPDP_Page_dump1+DumpPageSize-8),dump1_ret2=*(uint32_t*)(IPDP_Page_dump1+DumpPageSize-4);
@@ -181,9 +194,7 @@ struct ipdp_merge_stats_t *ipdp_merge(struct ipdp_plist_info *plist_info, FILE *
 			else if(dump1_ret1!=0||dump1_ret2!=0){
 				ret->Other_pages++;
 			}
-		}
-
-		if(dump1_ret1==0&&dump2_ret1==0){
+		}else if(dump1_ret1==0&&dump2_ret1==0){
 			//Wen both dumps are reported fine on this page.
 			if(memcmp(IPDP_Page_dump1,IPDP_Page_dump2,DumpPageSize)!=0){
 				ret->Mismatching_correct_pages++;
@@ -208,15 +219,28 @@ struct ipdp_merge_stats_t *ipdp_merge(struct ipdp_plist_info *plist_info, FILE *
 				spot_file=1;
 				printf("Detected spot file\n");
 			}
-			if(dump2_ret1==RET1_SKIPPED)
+			if(dump1_ret1==RET1_SKIPPED)
 				use_page=2;
+			if(dump1_ret1==RET1_SKIPPED&&dump2_ret1==RET1_SKIPPED){
+				if(!warned_both_skipped){
+					printf("Warning: found at least one page that is skipped on both files\n");
+					warned_both_skipped=1;
+				}
+			}else if(dump1_ret1!=0||dump2_ret1!=0){
+				fprintf(dump_ecc_log_file,"spot_list[%ld].ce=%d;\nspot_list[%ld].page=0x%04x;\n",log_file_index,(i%2==0)?0:1,log_file_index,i/2);
+				log_file_index++;
+				ret->ECC_error_count++;
+			}
 		}else{
 			//both dumps are bad in this page, let's see what to report..
+			if(dump_ecc_log_file){
+				fprintf(dump_ecc_log_file,"spot_list[%ld].ce=%d;\nspot_list[%ld].page=0x%04x;\n",log_file_index,(i%2==0)?0:1,log_file_index,i/2);
+				log_file_index++;
+
+			}
 			if(dump1_ret1==RET1_ECC_ERR||dump2_ret1==RET1_ECC_ERR){
 				if(dump2_ret1==RET1_ECC_ERR)
 					use_page=2;
-				if(dump_ecc_log_file)
-					fprintf(dump_ecc_log_file,"spot_list[%ld].ce=%d;\nspot_list[%ld].page=0x%04x;\n",ret->ECC_error_count,(i%2==0)?0:1,ret->ECC_error_count,i/2);
 				ret->ECC_error_count++;
 			}else if(dump1_ret1==RET1_BLANK && dump2_ret1==RET1_BLANK){
 				ret->Blank_pages++;
