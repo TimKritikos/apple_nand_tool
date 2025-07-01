@@ -129,6 +129,77 @@ struct ipdp_stats_t *ipdp_get_stats(struct ipdp_plist_info *plist_info, FILE *du
 	return ret;
 }
 
+struct stain_stats_t{
+	uint16_t stain_count;
+	uint16_t unknown_blocks;
+	uint8_t stain_content;
+};
+struct stain_stats_t *stain_stats(struct ipdp_plist_info *plist_info, FILE *dump, FILE *out, int verbose,int DumpPageSize, long int calculated_file_size){
+	fseek(dump, 0L, SEEK_END);
+	long int filesize = ftell(dump);
+	fseek(dump, 0L, SEEK_SET);
+
+	if (verbose&&filesize==calculated_file_size){
+		printf("Iphone dataprotection nand file size is correct!\n");
+	}else if(filesize!=calculated_file_size){
+		printf("Error: Iphone dataprotection nand file size is not correct!\n");
+		return NULL;
+	}
+
+	struct stain_stats_t *ret=malloc(sizeof(struct stain_stats_t));
+
+	memset(ret,0,sizeof(struct stain_stats_t));
+
+	uint64_t page_count=plist_info->block_pages*plist_info->ce_blocks*plist_info->ce;
+
+	uint8_t *IPDP_Page_dump=malloc(DumpPageSize);
+
+	int spot_file=0;
+
+	ret->stain_count=0;
+	ret->unknown_blocks=0; //these shouldn't be needed since we memset
+	int blank_page=0;
+	ret->stain_content=0;
+	for(uint32_t i=0;i<page_count;i++){
+		if(fread(IPDP_Page_dump,DumpPageSize,1,dump)!=1){
+			printf("Failed to read input file\n");
+			free(IPDP_Page_dump);
+			free(ret);
+			return NULL;
+		}
+
+		// from IOFlashControllerUserClient_OutputStruct in original iphone dataprotection ramdisk code
+		uint32_t ret1=*(uint32_t*)(IPDP_Page_dump+DumpPageSize-8),ret2=*(uint32_t*)(IPDP_Page_dump+DumpPageSize-4);
+		if(ret1==RET1_SKIPPED && ret2==0){
+			if(!spot_file){
+				printf("Spot file detected");
+				spot_file=1;
+			}
+			blank_page=0;
+		}else if(ret1==RET1_BLANK && ret2==0){
+			ret->stain_count++;
+			if(blank_page==0)
+				ret->stain_content++;
+			blank_page=1;
+			memset(IPDP_Page_dump,ret->stain_content,DumpPageSize);
+			printf("using 0x%02X ",ret->stain_content);
+			*(uint32_t*)(IPDP_Page_dump+DumpPageSize-8)=ret1;
+			*(uint32_t*)(IPDP_Page_dump+DumpPageSize-4)=ret2;
+			fwrite(IPDP_Page_dump,DumpPageSize,1,out);
+		}else{
+			blank_page=0;
+			if((ret1==RET1_ECC_ERR && ret2==0)||(ret1==0 && ret2==0)){
+				//good page or ecc err
+			}else{
+				ret->unknown_blocks++;
+			}
+		}
+		fwrite(IPDP_Page_dump,DumpPageSize,1,out);
+	}
+	free(IPDP_Page_dump);
+	return ret;
+}
+
 struct ipdp_merge_stats_t{
 	uint64_t Mismatching_correct_pages;
 	uint64_t ECC_on_just_one;
@@ -337,32 +408,37 @@ int main(int argc, char *argd[]){
 		return 1;
 	}
 
-	if(ipdp_filename2!=NULL){
-		if(ipdp_output==NULL){
-			printf("ERROR: need output file to be set\n");
+	if(ipdp_output!=NULL){
+		FILE *out=fopen(ipdp_output,"w");
+		if(out==NULL){
+			printf("couldn't open output file\n");
 			fclose(ipdp_file);
 			free(plist_info);
-			return 1;
+
 		}
-		FILE *ipdp_file2=fopen(ipdp_filename2,"r");
-		if(ipdp_file2==NULL){
-			printf("Couldn't open second iphone dataprotection file\n");
-			fclose(ipdp_file);
-			free(plist_info);
-			return 1;
+		if(ipdp_filename2==NULL){
+			printf("Action: stain blank page\n");
+
+			struct stain_stats_t *stats= stain_stats(plist_info,ipdp_file,out,verbose,DumpPageSize,calculated_file_size);
+			print_value("Stains used",stats->stain_content,40);
+			print_value("Stained pages",stats->stain_count,40);
+			print_value("Unkown blocks(!)",stats->unknown_blocks,40);
+			free(stats);
 		}else{
-			FILE *out=fopen(ipdp_output,"w");
-			if(out==NULL){
-				printf("couldn't open output file\n");
-				fclose(ipdp_file2);
+			FILE *ipdp_file2=fopen(ipdp_filename2,"r");
+			if(!ipdp_file2){
+				printf("Couldn't open second input file\n");
 				fclose(ipdp_file);
+				fclose(out);
 				free(plist_info);
+				return 1;
 			}
 
 			FILE *dump_ecc_log_file=NULL;
 			if(dump_ecc_log_filename!=NULL)
 				dump_ecc_log_file=fopen(dump_ecc_log_filename,"w");
 
+			printf("Action: merge two files\n");
 			struct ipdp_merge_stats_t *stats= ipdp_merge(plist_info,ipdp_file,ipdp_file2,out,verbose,DumpPageSize,calculated_file_size,dump_ecc_log_file);
 			if(stats!=NULL){
 				print_value("Both correct but mismatching pages(!):",stats->Mismatching_correct_pages,40);
@@ -379,6 +455,7 @@ int main(int argc, char *argd[]){
 			fclose(out);
 		}
 	}else{
+		printf("Action: get stats\n");
 		struct ipdp_stats_t *stats= ipdp_get_stats(plist_info,ipdp_file,verbose,DumpPageSize,calculated_file_size);
 		if(stats){
 			print_value("ECC error pages:",stats->ECC_error_count,23);
